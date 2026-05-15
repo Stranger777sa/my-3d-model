@@ -1,110 +1,82 @@
-import streamlit as st
-import plotly.graph_objects as go
 import numpy as np
+import matplotlib.pyplot as plt
 
-# إعدادات الصفحة
-st.set_page_config(page_title="تحليل النموذج التفاعلي", layout="wide")
+# إحداثيات النقاط (نصف قطر الأرض الافتراضي = 1)
+# الجزائر (شمال) والقطب الجنوبي (جنوب)
+lat_algeria, lon_algeria = 28.0, 2.0
+lat_south, lon_south = -80.0, 0.0
 
-# العنوان العربي
-st.title("تفاعلي")
-st.write("يمكنك تحريك هذه الكرة بلمس الشاشة")
+def geo_to_cartesian(lat, lon, r=1.0):
+    theta = np.radians(90 - lat)
+    phi = np.radians(lon)
+    x = r * np.sin(theta) * np.cos(phi)
+    y = r * np.cos(theta)
+    z = r * np.sin(theta) * np.sin(phi)
+    return np.array([x, y, z])
 
-# --- محاكاة البيانات ---
-# توليد سطح الكرة الأرضية (تقريبي)
-lons = np.linspace(-180, 180, 50)
-lats = np.linspace(-90, 90, 50)
-lons, lats = np.meshgrid(lons, lats)
-x = np.cos(np.radians(lats)) * np.cos(np.radians(lons))
-y = np.cos(np.radians(lats)) * np.sin(np.radians(lons))
-z = np.sin(np.radians(lats))
+p_algeria = geo_to_cartesian(lat_algeria, lon_algeria)
+p_south = geo_to_cartesian(lat_south, lon_south)
 
-# --- محاكاة المؤثرات (بلازما) ---
-# بلازما متوهجة على خط الاستواء
-plasma_eq = 1.0 - np.abs(np.radians(lats)) * 2.0
-plasma_eq = np.clip(plasma_eq, 0, 1)
+# محاكاة خط المجال المغناطيسي كمنحنى بين النقطتين
+t = np.linspace(0, 1, 200)
+# نقطة الانبعاج المغناطيسي (الارتفاع في الغلاف المغناطيسي)
+control_point = (p_algeria + p_south) * 1.5 
 
-# بلازما إضافية لتمثيل "نيفادا" و "اليابان"
-plasma_spots = np.zeros_like(lats)
-# نيفادا
-plasma_spots[ (np.abs(lons - -116) < 10) & (np.abs(lats - 38) < 10) ] = 0.8
-# اليابان
-plasma_spots[ (np.abs(lons - 138) < 10) & (np.abs(lats - 36) < 10) ] = 0.9
-# أفريقيا (منطقة التفريغ)
-plasma_spots[ (np.abs(lons - 20) < 10) & (np.abs(lats - 10) < 10) ] = 0.7
+# حساب مسار خط المجال (Bezier Curve)
+field_line = np.zeros((200, 3))
+for i, tv in enumerate(t):
+    field_line[i] = (1-tv)**2 * p_south + 2*(1-tv)*tv * control_point + tv**2 * p_algeria
 
-plasma_intensity = np.maximum(plasma_eq * 0.7, plasma_spots)
+# توليد حركة الجسيمات الحلزونية (الشرر النحاسي) وحساب نقاط المرآة
+steps = 500
+particle_path = []
 
-# --- بناء المجسم ثلاثي الأبعاد ---
-fig = go.Figure()
+print("[-] جاري حساب نقاط المرآة المغناطيسية (B_m)...")
+for i in range(steps):
+    # حركة ترددية ذهاباً وإياباً
+    tv = np.abs(np.sin(i * 0.02)) 
+    
+    # تحديد موقع الجسيم الأساسي على خط المجال
+    idx = int(tv * 199)
+    base_pos = field_line[idx]
+    
+    # تأثير الحركة المغزلية (Gyro-motion) الذي يضيق عند الاقتراب من الأرض
+    gyro_radius = 0.15 * np.sin(tv * np.pi) 
+    angle = i * 0.5
+    
+    x = base_pos[0] + np.cos(angle) * gyro_radius
+    y = base_pos[1]
+    z = base_pos[2] + np.sin(angle) * gyro_radius
+    
+    particle_path.append([x, y, z])
 
-# 1. طبقة السطح التفاعلي (الأرض + البلازما)
-fig.add_trace(go.Surface(
-    x=x, y=y, z=z,
-    surfacecolor=plasma_intensity, # استخدام شدة البلازما لتحديد الألوان
-    colorscale=[
-        [0, 'rgb(30, 40, 50)'],    # خلفية داكنة للأرض
-        [0.4, 'rgb(100, 150, 200)'], # محيطات (تقريبي)
-        [0.6, 'rgb(255, 100, 0)'],  # برتقالي (بداية التوهج)
-        [1.0, 'rgb(255, 200, 50)']   # أصفر (أعلى توهج)
-    ],
-    showscale=True, # إظهار مقياس الألوان (Colorbar)
-    colorbar=dict(
-        title="",
-        tickvals=[0, 1],
-        ticktext=["MIN", "MAX"],
-        thickness=15,
-        len=0.5,
-        x=1.05
-    ),
-    hovertemplate='Intensity: %{surfacecolor:.2f}<extra></extra>'
-))
+particle_path = np.array(particle_path)
 
-# 2. طبقة خطوط الحقل المغناطيسي (تقريبية)
-theta = np.linspace(0, 2*np.pi, 24)
-for t in theta:
-    r = np.linspace(1.2, 1.8, 10)
-    mag_x = r * np.cos(t)
-    mag_y = r * np.sin(t)
-    mag_z = np.zeros_like(mag_x)
-    fig.add_trace(go.Scatter3d(
-        x=mag_x, y=mag_y, z=mag_z,
-        mode='lines',
-        line=dict(color='rgba(100, 200, 255, 0.3)', width=1),
-        showlegend=False,
-        hoverinfo='none'
-    ))
+# إعداد الرسم ثلاثي الأبعاد
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
 
-# إعدادات العرض
-fig.update_layout(
-    scene=dict(
-        xaxis_visible=False,
-        yaxis_visible=False,
-        zaxis_visible=False,
-        bgcolor='rgb(10, 15, 20)', # خلفية فضاء داكنة
-        aspectmode='data'
-    ),
-    margin=dict(l=0, r=0, t=0, b=0),
-    showlegend=False
-)
+# رسم الأرض كمرجع مبسط
+u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+xs = np.cos(u)*np.sin(v)
+ys = np.cos(v)
+zs = np.sin(u)*np.sin(v)
+ax.plot_wireframe(xs, ys, zs, color="blue", alpha=0.1)
 
-# عرض المجسم في Streamlit
-st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+# رسم خط المجال المغناطيسي الرئيسي
+ax.plot(field_line[:,0], field_line[:,1], field_line[:,2], color="cyan", label="خط المجال المغناطيسي", alpha=0.6)
 
-# --- إضافة مقاييس البيانات المحاكية (كما في الصورة المرجعية) ---
-col1, col2 = st.columns([1, 1])
+# رسم خيوط التفريغ البلازمي النحاسي (حركة الجسيمات المتأرجحة)
+ax.plot(particle_path[:,0], particle_path[:,1], particle_path[:,2], color="#D2691E", linewidth=1.5, label="الشرر النحاسي (تفريغ البلازما)")
 
-with col1:
-    st.markdown("---")
-    st.markdown("**بيانات التيار الأرضي المحاكية:**")
-    st.info("أنشطة غير مسبوقة على خط الاستواء")
-    st.info("شدة البلازما: 0.85 (في نيفادا)")
-    st.info("شدة البلازما: 0.91 (في اليابان)")
+# تحديد نقاط المرآة
+ax.scatter(p_algeria[0], p_algeria[1], p_algeria[2], color="orange", s=100, label="نقطة المرآة: الجزائر")
+ax.scatter(p_south[0], p_south[1], p_south[2], color="red", s=100, label="نقطة المرآة: القطب الجنوبي")
 
-with col2:
-    st.markdown("---")
-    st.markdown("**مقياس الحقل المغناطيسي (محاكاة):**")
-    # محاكاة الرسم البياني للانخفاض
-    mag_field_data = np.linspace(100, 85, 20) + np.random.normal(0, 1, 20)
-    chart_data = {"الوقت": np.arange(20), "شدة الحقل (%)": mag_field_data}
-    st.line_chart(chart_data, x="الوقت", y="شدة الحقل (%)", color="#ff5555")
-    st.warning("انخفاض بنسبة 15%")
+ax.set_title("تصور ثلاثي الأبعاد لصورة المرآة والشرر النحاسي")
+ax.legend()
+
+# إذا كانت المنصة تدعم العرض المباشر (مثل Colab) سيعرضها فوراً، وإلا فسيحفظها كصورة
+plt.savefig("mirror_image_output.png")
+plt.show() 
+print("[+] تم توليد التصور وحفظه بنجاح باسم: mirror_image_output.png")
